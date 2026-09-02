@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         LinuxDo 增强阅读 + AI总结
 // @namespace    https://linux.do/
-// @version      1.5.0
+// @version      1.6.0
 // @license      MIT
-// @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。集成 AI 网页内容总结，一键总结帖子内容。
+// @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。集成 AI 网页内容总结，一键总结主贴及评论区讨论。
 // @author       Fashion
 // @match        https://linux.do/*
 // @icon         https://cdn3.ldstatic.com/optimized/4X/6/a/6/6a6affc7b1ce8140279e959d32671304db06d5ab_2_180x180.png
@@ -2496,12 +2496,13 @@
     API_URL: 'https://api.deepseek.com',
     API_KEY: '',
     MAX_TOKENS: 5000,
-    PROMPT: '概括总结以下网页内容中最主要最重要的观点和事实。要求准确、有条理，不超过200字。提示：重点放在内容中最重要的少量信息上，可以使用bulletList，不要重复显然的信息（大标题）或者琐碎的细节（附属信息，页面中的其他非主要内容）。',
+    PROMPT: '请总结以下帖子内容，分两部分输出：1. 主贴要点：概括楼主的主要观点、问题或信息；2. 评论综合：将所有评论作为一个整体，提炼共同观点、不同立场、讨论焦点和有价值的补充信息，不要逐条总结评论。要求准确、有条理，使用markdown格式。',
     MODEL: 'deepseek-v4-flash'
   };
 
   // --- 预设提示词模板 ---
   const PROMPT_TEMPLATES = [
+    { title: '主贴+评论总结', content: '请总结以下帖子内容，分两部分输出：\n\n### 主贴要点\n- 概括楼主的主要观点、问题或信息\n\n### 评论综合\n- 将所有评论作为一个整体综合分析，提炼共同观点、不同立场、讨论焦点和有价值的补充信息\n- 不要逐条总结评论，也不要罗列楼层号\n\n要求准确、有条理，使用markdown格式。' },
     { title: '简短概括', content: '概括总结以下网页内容中最主要最重要的观点和事实。要求准确、有条理，不超过200字。提示：重点放在内容中最重要的少量信息上，可以使用bulletList，不要重复显然的信息（大标题）或者琐碎的细节（附属信息，页面中的其他非主要内容）。' },
     { title: '通用总结', content: '请用markdown格式全面总结以下网页内容，包含主要观点、关键信息和重要细节。总结需要完整、准确、有条理。' },
     { title: '学术论文总结', content: '请用markdown格式总结这篇学术论文，包含以下要点：\n1. 研究目的和背景\n2. 研究方法\n3. 主要发现\n4. 结论和意义\n请确保总结准确、专业，并突出论文的创新点。' },
@@ -2634,12 +2635,13 @@
     container.innerHTML = '<div class="ldp-ai-error"><strong>错误：</strong> ' + error + '</div>';
   }
 
-  // --- 提取弹窗内帖子内容 ---
+  // --- 提取弹窗内帖子内容（主贴 + 评论区整合） ---
   function getModalContent(overlay) {
     const titleEl = overlay.querySelector('.ldp-title');
     const title = titleEl ? titleEl.textContent.trim() : '';
     const posts = overlay.querySelectorAll('.ldp-post');
-    let content = '标题：' + title + '\n\n';
+    let mainContent = '';
+    const comments = [];
     posts.forEach(function (post) {
       var author = post.querySelector('.ldp-author');
       var floor = post.querySelector('.ldp-floor');
@@ -2647,10 +2649,21 @@
       var authorText = author ? author.textContent.trim() : '';
       var floorText = floor ? floor.textContent.trim() : '';
       var contentText = postContent ? postContent.innerText.trim() : '';
-      if (contentText) {
-        content += floorText + ' @' + authorText + '\n' + contentText + '\n\n---\n\n';
+      if (!contentText) return;
+      if (floorText === '#1') {
+        mainContent = contentText;
+      } else {
+        comments.push(floorText + ' @' + authorText + '：' + contentText);
       }
     });
+    let content = '标题：' + title + '\n\n【主贴内容】\n' + (mainContent || '（无）');
+    if (comments.length > 0) {
+      content += '\n\n【评论区内容】（共 ' + comments.length +
+        ' 条评论。请将它们作为一个整体综合分析，提炼共同观点、不同立场与讨论焦点，不要逐条复述）\n';
+      content += comments.join('\n');
+    } else {
+      content += '\n\n【评论区内容】\n（暂无评论）';
+    }
     return content.trim();
   }
 
