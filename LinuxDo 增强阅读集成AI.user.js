@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 增强阅读 + AI总结
 // @namespace    https://linux.do/
-// @version      1.6.0
+// @version      1.6.1
 // @license      MIT
 // @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。集成 AI 网页内容总结，一键总结主贴及评论区讨论。
 // @author       Fashion
@@ -463,6 +463,34 @@
     let url = `${BASE}/n/-/${topicId}.json?sort=old`;
     if (page > 0) url += `&page=${page}`;
     return await fetchJSON(url);
+  }
+
+  /**
+   * fetchAllTopicPosts：拉取话题的全部帖子（供 AI 总结使用，不依赖弹窗已渲染的 DOM）。
+   * 先请求 /t/{id}.json 拿到完整 post ID 流，再对缺失的帖子按 PAGE_SIZE 分批补拉。
+   * @param {number} topicId - 话题 ID
+   * @param {function} [onProgress] - 进度回调 (doneBatches, totalBatches)
+   * @returns {Promise<{title: string, posts: Array}>} 按 post_number 升序的全部帖子
+   */
+  async function fetchAllTopicPosts(topicId, onProgress) {
+    const meta = await fetchJSON(`${BASE}/t/${topicId}.json`);
+    const stream = (meta.post_stream && meta.post_stream.stream) || [];
+    const postsById = new Map();
+    (meta.post_stream.posts || []).forEach(p => postsById.set(p.id, p));
+
+    const missing = stream.filter(id => !postsById.has(id));
+    const totalBatches = Math.ceil(missing.length / PAGE_SIZE);
+    for (let i = 0, done = 0; i < missing.length; i += PAGE_SIZE, done++) {
+      const batch = missing.slice(i, i + PAGE_SIZE);
+      const qs = batch.map(id => `post_ids[]=${id}`).join('&');
+      const res = await fetchJSON(`${BASE}/t/${topicId}/posts.json?${qs}`);
+      (res.post_stream && res.post_stream.posts || []).forEach(p => postsById.set(p.id, p));
+      if (onProgress) onProgress(done + 1, totalBatches);
+    }
+
+    const posts = Array.from(postsById.values())
+      .sort((a, b) => a.post_number - b.post_number);
+    return { title: meta.title || '', posts };
   }
 
   /**
@@ -1849,6 +1877,8 @@
       tracker,
       totalComments: 0,
       footerReplyCountEl: fReplyCountEl,
+      // 供 AI 总结全量抓取帖子（主贴 + 全部评论）
+      fetchAllTopicPosts: (onProgress) => fetchAllTopicPosts(topicId, onProgress),
     };
 
     const close = () => {
@@ -2667,6 +2697,65 @@
     return content.trim();
   }
 
+  // --- 提取帖子 cooked HTML 的纯文本（图片降级为占位符） ---
+  function htmlToText(html) {
+    if (!html) return '';
+    var tmp = document.createElement('div');
+    tmp.innerHTML = html;
+    tmp.querySelectorAll('img').forEach(function (img) {
+      img.replaceWith('[图片]');
+    });
+    return (tmp.innerText || tmp.textContent || '').trim();
+  }
+
+  // --- 通过 API 全量抓取话题帖子（主贴 + 全部评论），构建总结用内容 ---
+  var MAX_COMMENT_CHARS = 1000;   // 单条评论截断上限
+  var MAX_COMMENTS_TOTAL = 150000; // 评论区总字符上限（防止超出模型上下文）
+
+  async function buildTopicContent(ctx, onProgress) {
+    var data = await ctx.fetchAllTopicPosts(onProgress);
+    var title = data.title || '';
+
+    var mainContent = '';
+    var commentLines = [];
+    var totalLength = 0;
+    var skippedCount = 0;
+
+    data.posts.forEach(function (post) {
+      // 跳过已删除帖
+      if (!post.username || !post.cooked || post.deleted_at) return;
+
+      var text = htmlToText(post.cooked);
+      if (!text) return;
+      if (text.length > MAX_COMMENT_CHARS) text = text.slice(0, MAX_COMMENT_CHARS) + '…';
+
+      if (post.post_number === 1) {
+        mainContent = text;
+      } else {
+        var line = '#' + post.post_number + ' @' + post.username + '：' + text;
+        if (totalLength + line.length > MAX_COMMENTS_TOTAL) {
+          skippedCount++;
+          return;
+        }
+        totalLength += line.length;
+        commentLines.push(line);
+      }
+    });
+
+    var content = '标题：' + title + '\n\n【主贴内容】\n' + (mainContent || '（无）');
+    if (commentLines.length > 0) {
+      content += '\n\n【评论区内容】（共 ' + commentLines.length +
+        ' 条评论。请将它们作为一个整体综合分析，提炼共同观点、不同立场与讨论焦点，不要逐条复述）\n';
+      content += commentLines.join('\n');
+    } else {
+      content += '\n\n【评论区内容】\n（暂无评论）';
+    }
+    if (skippedCount > 0) {
+      content += '\n\n（内容过长，已省略后 ' + skippedCount + ' 条评论）';
+    }
+    return content.trim();
+  }
+
   // --- 核心：调用 AI 总结 ---
   async function summarizeTopic(content, config, container) {
     if (shouldUseBuiltinAI(config)) {
@@ -2810,12 +2899,25 @@
     function showPanel() { aiOverlay.hidden = false; }
     function hidePanel() { aiOverlay.hidden = true; }
 
-    function doSummarize() {
+    async function doSummarize() {
       if (isSummarizing) return;
       isSummarizing = true;
       showPanel();
       aiTitleEl.textContent = '正在总结...';
-      var content = getModalContent(overlay);
+      var content = '';
+      try {
+        if (ctx && typeof ctx.fetchAllTopicPosts === 'function') {
+          aiContent.innerHTML = '<div class="ldp-ai-loading"><div class="ldp-ai-spinner"></div><span>正在获取全部评论...</span></div>';
+          content = await buildTopicContent(ctx, function (done, total) {
+            aiContent.innerHTML = '<div class="ldp-ai-loading"><div class="ldp-ai-spinner"></div><span>正在获取全部评论（' + done + '/' + total + ' 批）...</span></div>';
+          });
+        } else {
+          content = getModalContent(overlay);
+        }
+      } catch (e) {
+        console.warn('[LDP AI] 全量抓取评论失败，回退为当前已加载内容：', e);
+        content = getModalContent(overlay);
+      }
       if (!content.trim()) {
         aiShowError(aiContent, '未获取到帖子内容');
         aiTitleEl.textContent = 'AI 总结';
