@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 增强阅读 + AI总结
 // @namespace    https://linux.do/
-// @version      1.6.2
+// @version      1.6.3
 // @license      MIT
 // @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。集成 AI 网页内容总结，一键总结主贴及评论区讨论。
 // @author       Fashion
@@ -40,7 +40,8 @@
       align-items:center;justify-content:center;background:rgba(0,0,0,.55);}
     .ldp-modal{position:relative;display:flex;flex-direction:column;
       width:90%;max-width:1000px;height:90vh;
-      border-radius:12px;overflow:hidden;font-size:16px;
+      border-radius:12px;overflow:hidden;
+      font-size:var(--ldp-font-size,16px);
       line-height:1.65;background:var(--secondary,#fff);color:var(--primary,#222);
       box-shadow:0 16px 50px rgba(0,0,0,.4);}
     .ldp-header{display:flex;align-items:flex-start;gap:10px;padding:16px 20px;
@@ -297,7 +298,8 @@
       background:transparent;padding:0 6px;line-height:1;}
     .ldp-ai-head-btns .ldp-ai-close:hover{color:#ff4d4f;background:#fff2f0;}
     .ldp-ai-content{flex:1;overflow-y:auto;padding:20px 24px;
-      line-height:1.8;color:var(--primary,#222);font-size:15px;
+      line-height:1.8;color:var(--primary,#222);
+      font-size:calc(var(--ldp-font-size,16px) - 1px);
       -webkit-overflow-scrolling:touch;min-height:60px;}
     .ldp-ai-content h1{font-size:1.6em;margin:.8em 0 .6em;
       padding-bottom:.3em;border-bottom:1px solid var(--primary-low,#f0f0f0);
@@ -380,8 +382,22 @@
     .ldp-ai-set-actions .ldp-ai-set-save:hover{background:#4096ff;border-color:#4096ff;}
     .ldp-ai-set-actions .ldp-ai-set-del{color:#ff4d4f;border-color:#ffccc7;}
     .ldp-ai-set-actions .ldp-ai-set-del:hover{background:#ff4d4f;color:#fff;border-color:#ff4d4f;}
+    .ldp-ai-set-group input[type=range]{flex:1;width:auto;padding:0;border:none;
+      box-shadow:none;height:24px;background:transparent;cursor:pointer;
+      accent-color:var(--tertiary,#1677ff);}
+    .ldp-ai-set-group input[type=range]:focus{border:none;box-shadow:none;}
+    .ldp-ai-font-value{min-width:44px;text-align:right;font-size:13px;font-weight:600;
+      color:var(--primary,#434343);font-variant-numeric:tabular-nums;flex:none;}
   `;
   document.head.appendChild(style);
+
+  /* 字体大小设置：阅读弹窗正文与 AI 总结内容共用，范围 12-24px，默认 16px */
+  (function applySavedFontSize() {
+    const v = parseInt(GM_getValue('LDP_FONT_SIZE', '16'), 10);
+    if (v >= 12 && v <= 24) {
+      document.documentElement.style.setProperty('--ldp-font-size', v + 'px');
+    }
+  })();
 
   /* 图标 */
   const ICONS = {
@@ -2996,6 +3012,13 @@
             '</div>' +
           '</div>' +
           '<div class="ldp-ai-set-group">' +
+            '<label for="ldp-ai-font-size">字体大小 <span style="font-size:12px;opacity:.6;">（阅读弹窗与 AI 总结，拖动立即生效）</span></label>' +
+            '<div class="ldp-ai-set-row">' +
+              '<input type="range" id="ldp-ai-font-size" min="12" max="24" step="1" value="' + (parseInt(GM_getValue('LDP_FONT_SIZE', '16'), 10) || 16) + '">' +
+              '<span class="ldp-ai-font-value">' + (parseInt(GM_getValue('LDP_FONT_SIZE', '16'), 10) || 16) + 'px</span>' +
+            '</div>' +
+          '</div>' +
+          '<div class="ldp-ai-set-group">' +
             '<label>API URL <span style="font-size:12px;opacity:.6;">（不用写 /chat/completions 后缀）</span></label>' +
             '<input type="text" id="ldp-ai-api-url" value="' + (config.API_URL || '') + '" placeholder="例如: https://api.deepai.com">' +
           '</div>' +
@@ -3039,6 +3062,16 @@
       var cancelBtn = setOverlay.querySelector('.ldp-ai-set-cancel');
       var apiKeyInput = setOverlay.querySelector('#ldp-ai-api-key');
       var templateSelect = setOverlay.querySelector('#ldp-ai-template-select');
+      var fontSizeInput = setOverlay.querySelector('#ldp-ai-font-size');
+      var fontSizeValue = setOverlay.querySelector('.ldp-ai-font-value');
+
+      // 字体大小：即时生效并单独保存（显示偏好，不随配置切换变化）
+      fontSizeInput.addEventListener('input', function () {
+        var v = parseInt(fontSizeInput.value, 10) || 16;
+        fontSizeValue.textContent = v + 'px';
+        document.documentElement.style.setProperty('--ldp-font-size', v + 'px');
+        GM_setValue('LDP_FONT_SIZE', String(v));
+      });
 
       function collectConfig() {
         return {
